@@ -30,7 +30,7 @@ pipeline {
         stage("Clone Code") {
             steps {
                 script {
-                    git branch: "${params.BRANCH}", url: 'https://github.com/arlasaikiran143/sabear_simplecutomerapp.git'
+                    git branch: "${params.BRANCH}", url: 'https://github.com/arlasaikiran143/spring3-mvc-maven-xml-hello-world-1.git'
                 }
             }
         }
