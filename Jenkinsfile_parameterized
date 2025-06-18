@@ -9,7 +9,7 @@ pipeline {
     }
 
     tools {
-        maven "Maven"  // Make sure "Maven" is set in Jenkins > Global Tool Configuration
+        maven "MVN_HOME"  // Make sure "Maven" is set in Jenkins > Global Tool Configuration
     }
 
     environment {
