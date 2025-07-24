@@ -1,78 +1,148 @@
 pipeline {
-    agent any 
+    agent any
+
     tools {
-        // Note: this should match with the tool name configured in your jenkins instance (JENKINS_URL/configureTools/)
-        maven "MVN_HOME"
-        
+        maven "Maven3"
+        jdk "Java17"
     }
-	 environment {
-        // This can be nexus3 or nexus2
-        NEXUS_VERSION = "nexus3"
-        // This can be http or https
-        NEXUS_PROTOCOL = "http"
-        // Where your Nexus is running
-        NEXUS_URL = "3.133.145.136:8081"
-        // Repository where we will upload the artifact
-        NEXUS_REPOSITORY = "devops"
-        // Jenkins credential id to authenticate to Nexus OSS
-        NEXUS_CREDENTIAL_ID = "Nexus_server"
+
+    environment {
+        SONARQUBE_ENV = 'MySonarQube'
+        NEXUS_CREDENTIAL_ID = 'nexus_keygen'
+        NEXUS_URL = '54.90.70.220:8081'
+        NEXUS_REPOSITORY = 'sample'
+        DOCKER_IMAGE = 'arlasaikiran1/sample'
+        DOCKERHUB_CREDENTIALS = 'docker-creds'
+        TOMCAT_URL = 'http://3.90.64.42:8083/manager/text'
+        TOMCAT_CREDENTIALS = 'tomcat-creds'
     }
+
     stages {
-        stage("clone code") {
+        stage('Checkout') {
             steps {
-                script {
-                    // Let's clone the source
-                    git 'https://github.com/betawins/spring3-mvc-maven-xml-hello-world-1.git';
+                deleteDir()
+                wrap([$class: 'AnsiColorBuildWrapper', 'colorMapName': 'xterm']) {
+                    git branch: 'main', url: 'https://github.com/manikiran7/spring3.git'
                 }
             }
         }
-        stage("mvn build") {
+
+        stage('Verify JDK') {
             steps {
-                script {
-                    // If you are using Windows then you should use "bat" step
-                    // Since unit testing is out of the scope we skip them
-                    sh 'mvn -Dmaven.test.failure.ignore=true install'
+                sh '''
+                    export JAVA_HOME=$JAVA_HOME
+                    export PATH=$JAVA_HOME/bin:$PATH
+                    echo "JAVA_HOME is: $JAVA_HOME"
+                    java -version
+                    mvn -version
+                '''
+            }
+        }
+
+        stage('Code Quality - SonarQube') {
+            steps {
+                wrap([$class: 'AnsiColorBuildWrapper', 'colorMapName': 'xterm']) {
+                    withSonarQubeEnv("${SONARQUBE_ENV}") {
+                        sh '''
+                            export JAVA_HOME=$JAVA_HOME
+                            export PATH=$JAVA_HOME/bin:$PATH
+                            mvn clean verify sonar:sonar
+                        '''
+                    }
                 }
             }
         }
-        stage("publish to nexus") {
+
+     stage('Maven Build') {
+    steps {
+        wrap([$class: 'AnsiColorBuildWrapper', 'colorMapName': 'xterm']) {
+            script {
+                def skipFlag = (env.SKIP_TESTS == 'true') ? '-DskipTests' : ''
+                sh """
+                    echo "Using JAVA_HOME: $JAVA_HOME"
+                    export PATH=\$JAVA_HOME/bin:\$PATH
+                    mvn clean install $skipFlag
+                """
+            }
+        }
+    }
+}
+
+
+        stage('Upload to Nexus') {
             steps {
-                script {
-                    // Read POM xml file using 'readMavenPom' step , this step 'readMavenPom' is included in: https://plugins.jenkins.io/pipeline-utility-steps
-                    pom = readMavenPom file: "pom.xml";
-                    // Find built artifact under target folder
-                    filesByGlob = findFiles(glob: "target/*.${pom.packaging}");
-                    // Print some info from the artifact found
-                    echo "${filesByGlob[0].name} ${filesByGlob[0].path} ${filesByGlob[0].directory} ${filesByGlob[0].length} ${filesByGlob[0].lastModified}"
-                    // Extract the path from the File found
-                    artifactPath = filesByGlob[0].path;
-                    // Assign to a boolean response verifying If the artifact name exists
-                    artifactExists = fileExists artifactPath;
-                    if(artifactExists) {
-                        echo "*** File: ${artifactPath}, group: ${pom.groupId}, packaging: ${pom.packaging}, version $BUILD_NUMBER}";
+                wrap([$class: 'AnsiColorBuildWrapper', 'colorMapName': 'xterm']) {
+                    script {
+                        def artifactPath = "target/ncodeit-hello-world-3.0.war"
+                        if (!fileExists(artifactPath)) {
+                            error "WAR file not found: ${artifactPath}"
+                        }
+
                         nexusArtifactUploader(
-                            nexusVersion: NEXUS_VERSION,
-                            protocol: NEXUS_PROTOCOL,
+                            nexusVersion: 'nexus3',
+                            protocol: 'http',
                             nexusUrl: NEXUS_URL,
-			    groupId: pom.groupId,
-                            version: '${BUILD_NUMBER}',
+                            groupId: 'com.ncodeit',
+                            version: "${BUILD_NUMBER}",
                             repository: NEXUS_REPOSITORY,
                             credentialsId: NEXUS_CREDENTIAL_ID,
-                            artifacts: [
-                                // Artifact generated such as .jar, .ear and .war files.
-                                [artifactId: pom.artifactId,
+                            artifacts: [[
+                                artifactId: 'ncodeit-hello-world',
                                 classifier: '',
                                 file: artifactPath,
-                                type: pom.packaging],
-                                // Lets upload the pom.xml file for additional information for Transitive dependencies
-                                [artifactId: pom.artifactId,
-                                classifier: '',
-                                file: "pom.xml",
-                                type: "pom"]
-                            ]
-                        );
-                    } else {
-                        error "*** File: ${artifactPath}, could not be found";
+                                type: 'war'
+                            ]]
+                        )
+                    }
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                wrap([$class: 'AnsiColorBuildWrapper', 'colorMapName': 'xterm']) {
+                    script {
+                        def warFile = "target/ncodeit-hello-world-3.0.war"
+                        if (!fileExists(warFile)) {
+                            error("WAR file not found! Ensure Maven build was successful.")
+                        }
+
+                        sh """
+                            docker ps -a --filter "ancestor=${DOCKER_IMAGE}" --format "{{.ID}}" | xargs -r docker stop || true
+                            docker ps -a --filter "ancestor=${DOCKER_IMAGE}" --format "{{.ID}}" | xargs -r docker rm || true
+                            docker images ${DOCKER_IMAGE} --format "{{.Repository}}:{{.Tag}}" | grep -v ":${BUILD_NUMBER}" | xargs -r docker rmi || true
+                            docker build -t ${DOCKER_IMAGE}:${BUILD_NUMBER} .
+                            docker tag ${DOCKER_IMAGE}:${BUILD_NUMBER} ${DOCKER_IMAGE}:latest
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                wrap([$class: 'AnsiColorBuildWrapper', 'colorMapName': 'xterm']) {
+                    withCredentials([usernamePassword(credentialsId: DOCKERHUB_CREDENTIALS, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                        sh """
+                            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+                            docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
+                            docker push ${DOCKER_IMAGE}:latest
+                            docker logout
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Tomcat') {
+            steps {
+                wrap([$class: 'AnsiColorBuildWrapper', 'colorMapName': 'xterm']) {
+                    withCredentials([usernamePassword(credentialsId: TOMCAT_CREDENTIALS, usernameVariable: 'TOMCAT_USER', passwordVariable: 'TOMCAT_PASS')]) {
+                        sh '''
+                            curl -v -T target/ncodeit-hello-world-3.0.war \
+                            -u $TOMCAT_USER:$TOMCAT_PASS \
+                            "${TOMCAT_URL}?path=/maniapp&update=true"
+                        '''
                     }
                 }
             }
